@@ -16,7 +16,8 @@ Two variants: YOLO-SemBEV (YOLOv8 backbone) and R-SemBEV (ResNet-101 backbone)
 
 Evaluated on the nuScenes dataset
 
-Architecture Overview
+![Architecture Overview]
+(assets/Model_Architecture.png)
 YOLO-SemBEV consists of four key components:
 
 YOLOv8 Backbone + PAN Neck — extracts multi-scale image features (P3/P4/P5) from the front camera
@@ -29,12 +30,7 @@ Multi-scale BEV Neck + Detection Head — fuses image BEV, radar BEV, and propos
 
 The 2D segmentation prior is provided by a frozen ResNet-UNet model pre-trained on Cityscapes.
 
-text
-Front Camera ──► YOLOv8 Backbone ──► PAN Neck ──► Image BEV Encoder ──┐
-                                                                        ├──► BEV Fusion ──► Detection Head
-Front Radar  ──► Radar Painter ──────────────────► Radar BEV Encoder ──┤
-                     ▲                                                  │
-Segmentation Prior ──┘──────────────────────────► Sparse Proposal BEV ─┘
+
 Results
 Foreground Occupancy (nuScenes val, 50 m range)
 Model	Backbone	FG IoU	Pr	Rec	F1	mAP	Latency
