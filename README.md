@@ -57,7 +57,7 @@ The 2D segmentation prior is provided by a frozen ResNet-UNet model pre-trained 
 
 ***
 ## Repository Structure
-
+```
 
 YOLO-SemBEV/
 ├── train.py                                  # Main training script
@@ -68,7 +68,7 @@ YOLO-SemBEV/
 │   └── dataset_loader_seg_large.py           # nuScenes dataloader with radar painting
 ├── requirements.txt
 └── README.md
-
+```
 ## Installation
 ```bash
 # Clone the repository
