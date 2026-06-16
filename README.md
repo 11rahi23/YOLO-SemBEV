@@ -84,17 +84,23 @@ pip install -r requirements.txt
 
 ```
 
-Requirements
-Python 3.9+
 
-PyTorch >= 2.0
+## Citation
 
-torchvision
+If you find this work useful, please cite:
 
-nuscenes-devkit
+```bibtex
+@article{yolosembev2026,
+  title     = {YOLO-SemBEV: Semantic-Guided BEV Occupancy Detection
+               using Single Camera and Radar},
+  author    = {<Authors>},
+  journal   = {<Venue>},
+  year      = {2026}
+}
+```
 
-numpy, opencv-python, tqdm, scipy
+***
 
 
-License
+## License
 This project is released under the MIT License.
