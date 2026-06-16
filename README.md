@@ -40,7 +40,7 @@ The 2D segmentation prior is provided by a frozen ResNet-UNet model pre-trained 
 | <img src="assets/Figure_2_base.jpg" width="260"/> | <img src="assets/Figure_2_seg.png" width="260"/> | <img src="assets/Figure_2_bev.png" width="260"/> |
 ### Foreground Occupancy (nuScenes val, 50 m range)
 
-| Model | Backbone | FG IoU | Pr | Rec | F1 | mAP | Latency |
+| Model | Backbone | FG IoU | Pr | Rec | F1 | AP | Latency |
 |-------|----------|--------|----|-----|----|-----|---------|
 | YOLO-SemBEV | YOLOv8 | **0.258** | **0.609** | 0.779 | **0.684** | **0.328** | **21 ms** |
 | R-SemBEV | ResNet-101 | 0.231 | 0.518 | **0.784** | 0.624 | 0.306 | 26 ms |
