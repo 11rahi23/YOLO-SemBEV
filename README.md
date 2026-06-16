@@ -16,6 +16,7 @@ Two variants: YOLO-SemBEV (YOLOv8 backbone) and R-SemBEV (ResNet-101 backbone)
 
 Evaluated on the nuScenes dataset
 
+Architecture Overview
 ![Architecture Overview](assets/Model_Architecture.png)
 YOLO-SemBEV consists of four key components:
 
@@ -31,6 +32,9 @@ The 2D segmentation prior is provided by a frozen ResNet-UNet model pre-trained 
 
 
 Results
+![Results](assets/Figure_2_base.jpg)
+![Results](assets/Figure_2_seg.jpg)
+![Results](assets/Figure_2_bev.jpg)
 Foreground Occupancy (nuScenes val, 50 m range)
 Model	Backbone	FG IoU	Pr	Rec	F1	mAP	Latency
 YOLO-SemBEV	YOLOv8	0.258	0.609	0.779	0.684	0.328	21 ms
