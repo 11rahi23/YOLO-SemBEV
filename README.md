@@ -37,7 +37,7 @@ The 2D segmentation prior is provided by a frozen ResNet-UNet model pre-trained 
 
 | Input Image | Segmentation Prior | BEV Prediction |
 |:-----------:|:------------------:|:--------------:|
-| <img src="assets/Figure_2_base.jpg" width="260"/> | <img src="assets/Figure_2_seg.jpg" width="260"/> | <img src="assets/Figure_2_bev.jpg" width="260"/> |
+| <img src="assets/Figure_2_base.jpg" width="260"/> | <img src="assets/Figure_2_seg.png" width="260"/> | <img src="assets/Figure_2_bev.png" width="260"/> |
 ### Foreground Occupancy (nuScenes val, 50 m range)
 
 | Model | Backbone | FG IoU | Pr | Rec | F1 | mAP | Latency |
