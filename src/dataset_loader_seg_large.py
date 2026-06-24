@@ -44,12 +44,9 @@ class NuscDataset(Dataset):
 
         self.mode = 'train'
         self.x_train_images, self.x_train_radar, self.x_train_camK, self.x_train_seg, self.x_val_images, self.x_val_radar, self.x_val_camK, self.x_val_seg, self.y_train, self.y_val = None, None, None, None, None, None, None, None, None, None
-        # ============================= Store paths instead of images ============================
         self.image_paths = []
         self.image_size = image_size
         self.radar_pcd, self.cam_intrinsics, self.labels = [], [], []
-        # =============================================================================================
-        #self.images, self.radar_pcd, self.cam_intrinsics, self.segmented_results, self.labels = [], [], [], [], []
         self.untransformed_labels = []
         #self.raw_images = []
         self.time_threshold = 100000
@@ -113,33 +110,6 @@ class NuscDataset(Dataset):
             # =============================== Store path only =======================================
             cam_path = os.path.join(self.nusc.dataroot, current_cam['filename'])
             self.image_paths.append(cam_path)
-            # image = Image.open(cam_path)
-            # width, height = image.size
-            # #print(f"(width, height): {image.size}")
-            # image_resized = image.resize(image_size)
-            # #print(f"(width, height) after resizing: {image_resized.size}")
-            # image_resized = np.array(image_resized)
-            # image_resized = image_resized.transpose(2, 0, 1)
-            # #print("image_np shape: ", image_resized.shape)
-            # self.images.append(image_resized)
-            # if save_raw_img:
-            #     self.raw_images.append(image)
-
-            # #Segmentation
-            # image_seg = np.array(image) 
-            # image_to_seg_resized = cv2.resize(image_seg, (self.seg_input_w, self.seg_input_h))
-            # image_to_seg = np.expand_dims(image_to_seg_resized, 0)
-            # seg_output = self.seg_model.predict(image_to_seg)  # (1, H, W, 19)
-            # seg_probs_19 = seg_output[0]    # (H, W, 19)
-            # seg_probs_19_resized = cv2.resize(seg_probs_19, image_size, interpolation=cv2.INTER_LINEAR)
-            # seg_probs_19_resized = seg_probs_19_resized / (seg_probs_19_resized.sum(axis=-1, keepdims=True) + 1e-8)    
-
-            # # Merge to 12 classes
-            # seg_probs_12 = self.merge_segmentation_classes(seg_probs_19_resized, self.class_mapping, num_simplified_classes=12)
-            # # Verify
-            # assert seg_probs_12.shape ==(image_size[1], image_size[0], 12), \
-            #     f"Shape mismatch: {seg_probs_12.shape} vs {(image_size[1], image_size[0], 12)}"
-            # self.segmented_results.append(seg_probs_12.astype(np.float32))
 
              
             cam_timestamp = current_cam['timestamp']
@@ -437,7 +407,7 @@ class NuscDataset(Dataset):
 
         #print("cluster labels: ", cluster_labels)
         cluster_id = 0
-        # 5. BFS region growing on grid indices (using python deque for cluster expansion)
+        # 5. BFS region growing on grid indices 
         visited = set()
         voxel_to_idx = {int(v): idx for idx, v in enumerate(unique_voxels)}
 
@@ -536,7 +506,7 @@ class NuscDataset(Dataset):
 
         # ---- Radar clusters in x–z ----
         if radar.shape[0] > 0:
-            x = radar[:, 0] * self.camX          # de-normalize if you want meters
+            x = radar[:, 0] * self.camX        
             z = radar[:, 2] * self.camZ
             cid = radar[:, 5].astype(int)
 
@@ -550,10 +520,10 @@ class NuscDataset(Dataset):
 
         # ---- GT boxes in x–z ----
         for ann in labels:
-            # centers and sizes are normalized; de-normalize back to meters
+            # centers and sizes are normalized
             cx = ann['center'][0] * self.camX
             cz = ann['center'][2] * self.camZ
-            w  = ann['size'][0] * 20.0   # your normalization: /20, /40, /10
+            w  = ann['size'][0] * 20.0   
             l  = ann['size'][1] * 40.0
             yaw = ann['yaw'] * np.pi     # your normalization: yaw / pi
 
@@ -621,13 +591,12 @@ class NuscDataset(Dataset):
 
         # ================2. Plot GT bounding boxes (green) =========================== #
         for ann in labels:
-            # centers and sizes are normalized; de-normalize back to meters
+       
             cx = ann['center'][0]
             cz = ann['center'][2]
-            w  = ann['size'][0]  # your normalization: /20, /40, /10
+            w  = ann['size'][0]  
             l  = ann['size'][1]
-            yaw = ann['yaw']     # your normalization: yaw / pi
-
+            yaw = ann['yaw']    
             # box corners in local box frame (x–z plane)
             # x is lateral, z is depth; w along x, l along z
             corners_local = np.array([
@@ -999,7 +968,7 @@ if __name__=="__main__":
         (704, 256), 
         path='v1.0-trainval/v1.0-trainval_meta', 
         max_samples=10, 
-        save_raw_img=False  # ✅ Changed to False (no longer needed)
+        save_raw_img=False  
     )
     dataset.train_val_split()
     
@@ -1011,9 +980,9 @@ if __name__=="__main__":
     # Set mode to train
     dataset.mode = 'train'
     
-    # Get sample using __getitem__ (this triggers lazy loading)
+    # Get sample using __getitem__ (lazy loading)
     test_idx = 1
-    sample = dataset[test_idx]  # ✅ NEW: Load on-demand
+    sample = dataset[test_idx] 
     
     # Extract data from sample dict
     train_image = sample['images']        # (C, H, W), normalized [0,1]
