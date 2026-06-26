@@ -976,274 +976,6 @@ class BEVFusionBlock(nn.Module):
         x = torch.cat([img_bev, radar_bev], dim=1)
         return self.conv(x)
 
-# ================= Hydra Radar Guided Depth Consistency ===================================
-
-class SEFusionBlock(nn.Module):
-    """
-    Squeeze-and-Excitation fusion of image BEV and radar BEV.
-    Equivalent to HyDRa step 2: 'splatted semantic BEV features and 
-    radar-BEV features are concatenated and fused by a SE block'
-    """
-    def __init__(self, img_ch, radar_ch, out_ch, reduction=16):
-        super().__init__()
-        combined = img_ch + radar_ch
-
-        # Channel mixing
-        self.mix = nn.Sequential(
-            nn.Conv2d(combined, out_ch, 1),
-            nn.BatchNorm2d(out_ch),
-            nn.ReLU()
-        )
-
-        # SE: global context → channel attention
-        self.se = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),          # (B, out_ch, 1, 1)
-            nn.Flatten(),                      # (B, out_ch)
-            nn.Linear(out_ch, out_ch // reduction),
-            nn.ReLU(),
-            nn.Linear(out_ch // reduction, out_ch),
-            nn.Sigmoid()
-        )
-
-    def forward(self, img_bev, radar_bev):
-        x = torch.cat([img_bev, radar_bev], dim=1)   # (B, img_ch+radar_ch, H, W)
-        x = self.mix(x)                               # (B, out_ch, H, W)
-        scale = self.se(x).view(x.shape[0], -1, 1, 1) # (B, out_ch, 1, 1)
-        return x * scale                              # channel-wise recalibration
-    
-
-class RadarGuidanceNetwork(nn.Module):
-    """
-    HyDRa RGN: lightweight radar-only BEV → spatial attention weights.
-    'A 3x3 convolution followed by sigmoid encodes radar-only BEV features 
-    to additional attention weights'
-    """
-    def __init__(self, radar_ch):
-        super().__init__()
-        self.rgn = nn.Sequential(
-            nn.Conv2d(radar_ch, radar_ch, 3, padding=1),
-            nn.BatchNorm2d(radar_ch),
-            nn.ReLU(),
-            nn.Conv2d(radar_ch, 1, 3, padding=1),  # collapse to single attention map
-            nn.Sigmoid()                            # (B, 1, H, W) weights in [0,1]
-        )
-
-    def forward(self, radar_bev):
-        return self.rgn(radar_bev)  # (B, 1, H, W)
-    
-
-class BackwardProjection(nn.Module):
-    """
-    HyDRa backward projection: BEV → perspective → refine → BEV.
-    
-    Enforces consistency between BEV space and perspective view space.
-    Radar attention weights (from RGN) guide which BEV regions to trust.
-    """
-    def __init__(self, bev_ch, feat_ch,
-                 bev_h=128, bev_w=128,
-                 x_range=(-50.0, 50.0),
-                 z_range=(0.0, 100.0)):
-        super().__init__()
-        self.bev_h = bev_h
-        self.bev_w = bev_w
-        self.x_range = x_range
-        self.z_range = z_range
-
-        # Refine features in perspective space
-        self.perspective_refine = nn.Sequential(
-            nn.Conv2d(bev_ch, feat_ch, 3, padding=1),
-            nn.BatchNorm2d(feat_ch),
-            nn.ReLU(),
-            nn.Conv2d(feat_ch, feat_ch, 3, padding=1),
-            nn.BatchNorm2d(feat_ch),
-            nn.ReLU()
-        )
-
-        # Re-project back: perspective → BEV channels
-        self.bev_restore = nn.Sequential(
-            nn.Conv2d(feat_ch, bev_ch, 1),
-            nn.BatchNorm2d(bev_ch),
-            nn.ReLU()
-        )
-
-        # Final residual gate
-        self.gate = nn.Sequential(
-            nn.Conv2d(bev_ch * 2, bev_ch, 1),
-            nn.Sigmoid()
-        )
-
-    def forward(self, fused_bev, radar_attn, depth_prob, depth_values, cam_K):
-        """
-        fused_bev:    (B, C, bev_h, bev_w)   - SE-fused BEV
-        radar_attn:   (B, 1, bev_h, bev_w)   - RGN attention weights
-        depth_prob:   (B, D, H_img, W_img)   - depth distribution from DepthHead
-        depth_values: (1, D, 1, 1)           - bin centers
-        cam_K:        (B, 3, 3)              - camera intrinsics
-        
-        Returns:      (B, C, bev_h, bev_w)   - refined BEV
-        """
-        B, C, bev_H, bev_W = fused_bev.shape
-        D = depth_prob.shape[1]
-        device = fused_bev.device
-
-        # ── 1. Weight BEV by radar confidence ──────────────────────────────
-        # High-confidence radar regions (near detections) get stronger signal
-        weighted_bev = fused_bev * radar_attn   # (B, C, bev_h, bev_w)
-
-        # ── 2. Backward project BEV → perspective view ─────────────────────
-        # For each image pixel, sample from BEV using geometry
-        _, _, H_img, W_img = depth_prob.shape
-
-        # Build pixel grid
-        u = torch.linspace(0, W_img-1, W_img, device=device)
-        v = torch.linspace(0, H_img-1, H_img, device=device)
-        vv, uu = torch.meshgrid(v, u, indexing='ij')        # (H, W)
-        uv1 = torch.stack([uu, vv, torch.ones_like(uu)], dim=-1)  # (H, W, 3)
-
-        # Expected depth per pixel: sum(depth_prob * depth_values)
-        depth_vals = depth_values.to(device)                # (1, D, 1, 1)
-        expected_depth = (depth_prob * depth_vals).sum(dim=1)  # (B, H, W)
-
-        # Back-project pixels to 3D using expected depth
-        K_inv = torch.inverse(cam_K)                        # (B, 3, 3)
-        uv1_flat = uv1.view(-1, 3).t()                      # (3, H*W)
-
-        perspective_bev_feat = torch.zeros(B, C, H_img, W_img, device=device)
-
-        for b in range(B):
-            xyz = K_inv[b] @ uv1_flat                       # (3, H*W)
-            z = expected_depth[b].view(-1)                  # (H*W,)
-            xyz = xyz * z.unsqueeze(0)                      # (3, H*W) scale by depth
-
-            x_3d = xyz[0]   # lateral
-            z_3d = xyz[2]   # depth
-
-            # Map to BEV grid coordinates
-            x_norm = (x_3d - self.x_range[0]) / (self.x_range[1] - self.x_range[0])
-            z_norm = (z_3d - self.z_range[0]) / (self.z_range[1] - self.z_range[0])
-
-            # Convert to grid_sample coordinates: [-1, 1]
-            grid_x = x_norm * 2 - 1   # (H*W,)
-            grid_z = z_norm * 2 - 1   # (H*W,)
-
-            # Sample BEV features at the projected locations
-            grid = torch.stack([grid_x, grid_z], dim=-1)   # (H*W, 2)
-            grid = grid.view(1, H_img, W_img, 2)           # (1, H, W, 2)
-
-            # grid_sample: sample weighted_bev at perspective-projected locations
-            sampled = F.grid_sample(
-                weighted_bev[b:b+1],    # (1, C, bev_h, bev_w)
-                grid,                    # (1, H, W, 2)
-                mode='bilinear',
-                padding_mode='zeros',
-                align_corners=True
-            )   # (1, C, H, W)
-            perspective_bev_feat[b] = sampled.squeeze(0)
-
-        # ── 3. Refine in perspective space ──────────────────────────────────
-        # Apply conv refinement — spatial context in image space
-        refined_persp = self.perspective_refine(perspective_bev_feat)  # (B, feat_ch, H, W)
-
-        # ── 4. Re-project refined features back to BEV ──────────────────────
-        # Use same depth distribution to lift back up
-        # (simplified: use depth-weighted scatter, same as ImageBEVEncoder)
-        refined_persp_bev_ch = self.bev_restore(refined_persp)  # (B, C, H, W)
-
-        # Lift back: outer product with depth_prob, scatter into BEV
-        feat_expanded = refined_persp_bev_ch.unsqueeze(1).expand(B, D, C, H_img, W_img)
-        depth_expanded = depth_prob.unsqueeze(2)                 # (B, D, 1, H, W)
-        lifted = feat_expanded * depth_expanded                   # (B, D, C, H, W)
-
-        # Rebuild BEV pixel grid indices (same as ImageBEVEncoder)
-        u_lin = torch.linspace(0, W_img-1, W_img, device=device)
-        v_lin = torch.linspace(0, H_img-1, H_img, device=device)
-        vv2, uu2 = torch.meshgrid(v_lin, u_lin, indexing='ij')
-        uv1_2 = torch.stack([uu2, vv2, torch.ones_like(uu2)], dim=-1)
-        uv1_2 = uv1_2.view(1, 1, H_img, W_img, 3).expand(B, D, H_img, W_img, 3)
-
-        K_inv_exp = torch.inverse(cam_K).view(B, 1, 1, 1, 3, 3)
-        xyz_cam = torch.matmul(K_inv_exp, uv1_2.unsqueeze(-1)).squeeze(-1)
-        xyz_cam = xyz_cam * depth_vals.view(1, D, 1, 1, 1)
-
-        x_idx = xyz_cam[..., 0]
-        z_idx = xyz_cam[..., 2]
-        x_norm_bev = (x_idx - self.x_range[0]) / (self.x_range[1] - self.x_range[0])
-        z_norm_bev = (z_idx - self.z_range[0]) / (self.z_range[1] - self.z_range[0])
-
-        i = (z_norm_bev * bev_H).long().clamp(0, bev_H-1)
-        j = (x_norm_bev * bev_W).long().clamp(0, bev_W-1)
-
-        lifted_flat = lifted.reshape(B, D * H_img * W_img, C)
-        flat_idx = i.reshape(B, D * H_img * W_img) * bev_W + \
-                   j.reshape(B, D * H_img * W_img)
-
-        reprojected_bev = torch.zeros(B, bev_H * bev_W, C, device=device)
-        reprojected_bev = reprojected_bev.scatter_add_(
-            1, flat_idx.unsqueeze(-1).expand(-1, -1, C), lifted_flat
-        )
-        counts = torch.zeros(B, bev_H * bev_W, device=device).scatter_add_(
-            1, flat_idx, torch.ones_like(flat_idx, dtype=torch.float32)
-        )
-        reprojected_bev = reprojected_bev / counts.clamp(min=1).unsqueeze(-1)
-        reprojected_bev = reprojected_bev.view(B, bev_H, bev_W, C).permute(0, 3, 1, 2)
-
-        # ── 5. Gated residual: blend original BEV with re-projected BEV ─────
-        gate_weights = self.gate(
-            torch.cat([fused_bev, reprojected_bev], dim=1)
-        )   # (B, C, bev_h, bev_w) — learned blend weights
-        return fused_bev + gate_weights * reprojected_bev
-    
-class RadarWeightedDepthConsistency(nn.Module):
-    """
-    Full HyDRa RDC module:
-      1. SE-fuse image BEV + radar BEV
-      2. RGN produces spatial radar attention weights
-      3. Backward projection enforces BEV ↔ perspective consistency
-    
-    Drop-in replacement for your fusion_pX layers.
-    """
-    def __init__(self, img_bev_ch, radar_ch, out_ch,
-                 bev_h=128, bev_w=128,
-                 x_range=(-50.0, 50.0),
-                 z_range=(0.0, 100.0)):
-        super().__init__()
-
-        self.se_fusion = SEFusionBlock(
-            img_ch=img_bev_ch, radar_ch=radar_ch, out_ch=out_ch
-        )
-        self.rgn = RadarGuidanceNetwork(radar_ch=radar_ch)
-        self.backward_proj = BackwardProjection(
-            bev_ch=out_ch, feat_ch=out_ch,
-            bev_h=bev_h, bev_w=bev_w,
-            x_range=x_range, z_range=z_range
-        )
-
-    def forward(self, img_bev, radar_bev, depth_prob, depth_values, cam_K):
-        """
-        img_bev:      (B, img_bev_ch, H, W)
-        radar_bev:    (B, radar_ch, H, W)
-        depth_prob:   (B, D, H_img, W_img)
-        depth_values: (1, D, 1, 1)
-        cam_K:        (B, 3, 3)
-        Returns:      (B, out_ch, H, W)
-        """
-        # Step 1: SE fusion
-        fused = self.se_fusion(img_bev, radar_bev)     # (B, out_ch, H, W)
-
-        # Step 2: Radar spatial attention
-        radar_attn = self.rgn(radar_bev)               # (B, 1, H, W)
-
-        # Step 3: Backward projection with radar guidance
-        refined = self.backward_proj(
-            fused, radar_attn, depth_prob, depth_values, cam_K
-        )   # (B, out_ch, H, W)
-
-        return refined
-    
-
-
-
-
 
 class BEVCrossAttention(nn.Module):
     """
@@ -1614,52 +1346,48 @@ class YOLOv8Neck(nn.Module):
         
         # ============ Channel Reduction ============
         # Bring all feature maps to same channel dimension (256)
-        # Spatial sizes remain: P5=20×20, P4=40×40, P3=80×80
-        fp5 = self.reduce_p5(p5)  # (B, 256, 20, 20)  ✅ FIXED
-        fp4 = self.reduce_p4(p4)  # (B, 256, 40, 40)  ✅ FIXED
-        fp3 = self.reduce_p3(p3)  # (B, 256, 80, 80) ✅ CORRECT
+        # Spatial sizes remain: P5=32×32, P4=64×64, P3=128×128
+        fp5 = self.reduce_p5(p5)  # (B, 256, 32, 32)  
+        fp4 = self.reduce_p4(p4)  # (B, 256, 64, 64)  
+        fp3 = self.reduce_p3(p3)  # (B, 256, 128, 128) 
 
         # print(f"After channel reduction:")
-        # print(f"  fp5: {fp5.shape}")  # (B, 256, 20, 20)
-        # print(f"  fp4: {fp4.shape}")  # (B, 256, 40, 40)
-        # print(f"  fp3: {fp3.shape}")  # (B, 256, 80, 80)
+        # print(f"  fp5: {fp5.shape}")  # (B, 256, 32, 32)
+        # print(f"  fp4: {fp4.shape}")  # (B, 256, 64, 64)
+        # print(f"  fp3: {fp3.shape}")  # (B, 256, 128, 128)
         
         # ============ Top-Down FPN: Coarse -> Fine ============
         # Enrich fine-scale features with coarse-scale semantic info
         
-        # P5 -> P4: Upsample P5 (20×20 -> 40x40) and fuse with P4
-        up_p5 = F.interpolate(fp5, size=fp4.shape[2:], mode='bilinear', align_corners=True)  # ✅ 20x20 -> 40x40
-        p4_concat = torch.cat([up_p5, fp4], dim=1)  # (B, 512, 40, 40) ✅
-        fp4_td = self.c2f_p4_td(p4_concat)  # (B, 256, 40, 40) ✅
+        # P5 -> P4: Upsample P5 (32×32 -> 64x64) and fuse with P4
+        up_p5 = F.interpolate(fp5, size=fp4.shape[2:], mode='bilinear', align_corners=True)  # 32x32 -> 64x64
+        p4_concat = torch.cat([up_p5, fp4], dim=1)  # (B, 512, 64, 64)
+        fp4_td = self.c2f_p4_td(p4_concat)  # (B, 256, 64, 64)
         
         # P4 -> P3: Upsample P4 (40x40 -> 80x80) and fuse with P3  
-        up_p4 = F.interpolate(fp4_td, size=fp3.shape[2:], mode='bilinear', align_corners=True)  # ✅ 40x40 -> 80x80
-        p3_concat = torch.cat([up_p4, fp3], dim=1)  # (B, 512, 80, 80) ✅
-        fp3_td = self.c2f_p3_td(p3_concat)  # (B, 256, 80, 80) ✅
+        up_p4 = F.interpolate(fp4_td, size=fp3.shape[2:], mode='bilinear', align_corners=True)  # 64x64 -> 128x128
+        p3_concat = torch.cat([up_p4, fp3], dim=1)  # (B, 512, 128, 128)
+        fp3_td = self.c2f_p3_td(p3_concat)  # (B, 256, 128, 128)
         
         # ============ Bottom-Up PAN: Fine -> Coarse ============
         # Enrich coarse-scale features with fine-scale localization info
         
-        # P3 -> P4: Downsample P3 (80x80 -> 40x40) and fuse with P4
-        down_p3 = self.down_p3(fp3_td)  # (B, 256, 40, 40) ✅
-        p4_concat_bu = torch.cat([down_p3, fp4_td], dim=1)  # (B, 512, 40, 40) ✅
-        fp4_bu = self.c2f_p4_bu(p4_concat_bu)  # (B, 256, 40, 40) ✅
+        # P3 -> P4: Downsample P3 (128x128 -> 64x64) and fuse with P4
+        down_p3 = self.down_p3(fp3_td)  # (B, 256, 64, 64)
+        p4_concat_bu = torch.cat([down_p3, fp4_td], dim=1)  # (B, 512, 64, 64)
+        fp4_bu = self.c2f_p4_bu(p4_concat_bu)  # (B, 256, 64, 64)
         
-        # P4 -> P5: Downsample P4 (40x40 -> 20x20) and fuse with P5
-        down_p4 = self.down_p4(fp4_bu)  # (B, 256, 20, 20) ✅
-        p5_concat_bu = torch.cat([down_p4, fp5], dim=1)  # (B, 512, 20, 20) ✅
-        fp5_bu = self.c2f_p5_bu(p5_concat_bu)  # (B, 256, 20, 20) ✅
+        # P4 -> P5: Downsample P4 (64x64 -> 32x32) and fuse with P5
+        down_p4 = self.down_p4(fp4_bu)  # (B, 256, 32, 32)
+        p5_concat_bu = torch.cat([down_p4, fp5], dim=1)  # (B, 512, 32, 32)
+        fp5_bu = self.c2f_p5_bu(p5_concat_bu)  # (B, 256, 32, 32)
         
         # print(f"Final outputs:")
-        # print(f"  fp3_td: {fp3_td.shape}")  # (B, 256, 80, 80)
-        # print(f"  fp4_bu: {fp4_bu.shape}")  # (B, 256, 40, 40)
-        # print(f"  fp5_bu: {fp5_bu.shape}")  # (B, 256, 20, 20)
+        # print(f"  fp3_td: {fp3_td.shape}")  # (B, 256, 128, 128)
+        # print(f"  fp4_bu: {fp4_bu.shape}")  # (B, 256, 64, 64)
+        # print(f"  fp5_bu: {fp5_bu.shape}")  # (B, 256, 32, 32)
         
-        
-        # Return multi-scale outputs for detection heads
-        # P3: 80×80 grid (1.25 m/cell) - small/close objects
-        # P4: 40×40 grid   (2.50 m/cell) - medium objects
-        # P5: 20x20 grid   (5.0 m/cell) - large/distant objects
+    
         return [fp3_td, fp4_bu, fp5_bu]
 
 
@@ -1734,8 +1462,6 @@ class YOLOv8Head(nn.Module):
                     nn.Conv2d(c//2, 1, 1)   # Predicts IOU quality
                 )
             )
-
-        # ⭐ ADD BIAS INIT HERE - after objbranches created
         with torch.no_grad():
             for i, branch in enumerate(self.obj_branches):
                 final_conv = branch[-1]  # Last layer (1x1 Conv2d)
@@ -1775,7 +1501,7 @@ class YOLOv8Head(nn.Module):
             
             # Split regression outputs (keep as raw values for loss computation)
             x_off = reg_out[:, 0:1, :, :]             # (B, 1, H, W) - x offset (will be sigmoid in loss)
-            y_raw = reg_out[:, 1:2, :, :]             # (B, 1, H, W) - y metric (will be normalized in loss)
+            y_raw = reg_out[:, 1:2, :, :]             # (B, 1, H, W) - y metric (will be sigmoid in loss)
             z_off = reg_out[:, 2:3, :, :]             # (B, 1, H, W) - z offset (will be sigmoid in loss)
             w_log = reg_out[:, 3:4, :, :]             # (B, 1, H, W) - log(width)
             l_log = reg_out[:, 4:5, :, :]             # (B, 1, H, W) - log(length)
