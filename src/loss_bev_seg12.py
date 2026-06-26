@@ -451,7 +451,7 @@ class YOLO3DFusionLoss(nn.Module):
             
             scale_stats.append(scale_info)
         
-        # ⭐ STORE PER-BATCH SCALE DATA (unweighted raw losses)
+        # Store per-batch scale data (unweighted raw losses)
         batch_scale_data = []
         for i, (stat, loss_dict) in enumerate(zip(scale_stats, scale_loss_dicts)):
             batch_scale_data.append({
@@ -535,10 +535,6 @@ class YOLO3DFusionLoss(nn.Module):
             x_off = torch.sigmoid(box_pred_pos_raw[:, 0])
             z_off = torch.sigmoid(box_pred_pos_raw[:, 2])
 
-            # Decode offsets in raw logits so that neighbor cells can also detect objects\
-            # x_off = box_pred_pos_raw[:, 0].clamp(min=0.0, max=1.0)
-            # z_off = box_pred_pos_raw[:, 2].clamp(min=0.0, max=1.0)
-
             # Grid to metric conversion
             x_norm = (gw + x_off) / W
             z_norm = (gh + z_off) / H
@@ -619,10 +615,6 @@ class YOLO3DFusionLoss(nn.Module):
             # # Decode offsets
             x_off = torch.sigmoid(box_pred_pos_raw[:, 0])
             z_off = torch.sigmoid(box_pred_pos_raw[:, 2])
-
-            # Decode offsets in raw logits so that neighbor cells can also detect objects\
-            # x_off = box_pred_pos_raw[:, 0]
-            # z_off = box_pred_pos_raw[:, 2]
 
             # Grid to metric conversion
             x_norm = (gw + x_off) / W
