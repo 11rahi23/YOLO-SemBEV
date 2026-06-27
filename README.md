@@ -85,20 +85,19 @@ pip install -r requirements.txt
 ```
 
 This work is under review for publication.
-<!--## Citation
+<!--## Citation-->
 
-If you find this work useful, please cite:
+<!--If you find this work useful, please cite:-->
 
-```bibtex
-@article{yolosembev2026,
-  title     = {YOLO-SemBEV: Semantic-Guided BEV Occupancy Detection
-               using Single Camera and Radar},
-  author    = {<Authors>},
-  journal   = {<Venue>},
-  year      = {2026}
-}
+<!--```bibtex-->
+<!--@article{yolosembev2026,-->
+  <!--title     = {YOLO-SemBEV: Semantic-Guided BEV Occupancy Detection-->
+               <!--using Single Camera and Radar},-->
+  <!--author    = {<Authors>},-->
+  <!--journal   = {<Venue>},-->
+  <!--year      = {2026}-->
+<!--}-->
 ```
--->
 ***
 
 
